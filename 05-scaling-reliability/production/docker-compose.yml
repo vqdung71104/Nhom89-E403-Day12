@@ -17,14 +17,12 @@ services:
   # ──────────────────────────────────────
   agent:
     build:
-      context: ../..
-      dockerfile: 05-scaling-reliability/advanced/Dockerfile
+      context: .
+      dockerfile: Dockerfile
     environment:
       - REDIS_URL=redis://redis:6379/0
       - ENVIRONMENT=demo
       - PORT=8000
-    env_file:
-      - .env.local
     depends_on:
       redis:
         condition: service_healthy

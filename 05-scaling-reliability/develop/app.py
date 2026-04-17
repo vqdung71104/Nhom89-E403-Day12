@@ -20,38 +20,42 @@ Simulate shutdown:
 """
 import os
 import time
-import signal
 import logging
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
 import uvicorn
 from utils.mock_llm import ask
+from signal_handler import register_shutdown_handler
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
 START_TIME = time.time()
 _is_ready = False
+_accepting_new_requests = True
 _in_flight_requests = 0  # đếm số request đang xử lý
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _is_ready
+    global _is_ready, _accepting_new_requests
 
     # ── Startup ──
     logger.info("Agent starting up...")
     logger.info("Loading model and checking dependencies...")
     time.sleep(0.2)  # simulate startup time
+    _accepting_new_requests = True
     _is_ready = True
     logger.info("✅ Agent is ready!")
 
     yield
 
     # ── Shutdown ──
+    _accepting_new_requests = False
     _is_ready = False
     logger.info("🔄 Graceful shutdown initiated...")
 
@@ -73,6 +77,13 @@ app = FastAPI(title="Agent — Health Check Demo", lifespan=lifespan)
 async def track_requests(request, call_next):
     """Theo dõi số request đang xử lý."""
     global _in_flight_requests
+
+    if not _accepting_new_requests and request.url.path not in {"/health", "/ready"}:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Server is shutting down. Try again later."},
+        )
+
     _in_flight_requests += 1
     try:
         response = await call_next(request)
@@ -171,20 +182,32 @@ def ready():
 # ──────────────────────────────────────────────────────────
 # GRACEFUL SHUTDOWN
 # ──────────────────────────────────────────────────────────
-
-def handle_sigterm(signum, frame):
-    """
-    SIGTERM là signal platform gửi khi muốn dừng container.
-    Khác với SIGKILL (không thể catch được).
-
-    uvicorn bắt SIGTERM tự động và gọi lifespan shutdown.
-    Hàm này để log thêm thông tin.
-    """
-    logger.info(f"Received signal {signum} — uvicorn will handle graceful shutdown")
+def _stop_accepting_new_requests():
+    global _accepting_new_requests
+    _accepting_new_requests = False
 
 
-signal.signal(signal.SIGTERM, handle_sigterm)
-signal.signal(signal.SIGINT, handle_sigterm)
+def _mark_not_ready():
+    global _is_ready
+    _is_ready = False
+
+
+def _get_in_flight_requests() -> int:
+    return _in_flight_requests
+
+
+def _close_connections():
+    # In this demo app, uvicorn/FastAPI manages socket and connection cleanup.
+    logger.info("Connection cleanup delegated to uvicorn/FastAPI")
+
+
+register_shutdown_handler(
+    stop_accepting_cb=_stop_accepting_new_requests,
+    mark_not_ready_cb=_mark_not_ready,
+    in_flight_cb=_get_in_flight_requests,
+    close_connections_cb=_close_connections,
+    logger=logger,
+)
 
 
 if __name__ == "__main__":
